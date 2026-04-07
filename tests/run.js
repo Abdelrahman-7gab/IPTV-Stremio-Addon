@@ -480,13 +480,145 @@ async function runArabicNormalizationSearchTests() {
     directProvider.fetchData = originalFetchData;
 }
 
+function runSnapshotNormalizerTests() {
+    const { normalizeSnapshot } = require('../snapshotNormalizer');
+
+    const normalized = normalizeSnapshot({
+        xtreamUrl: 'http://panel.example.com:8080',
+        xtreamUsername: 'demo',
+        xtreamPassword: 'secret',
+        includeSeries: true,
+        liveCategories: { '10': 'News' },
+        vodCategories: { '20': 'Movies' },
+        seriesCategories: { '30': 'Series' },
+        liveStreams: [
+            { stream_id: 1, name: 'Channel 1', category_id: '10', stream_icon: 'https://img/channel.png', epg_channel_id: 'channel-1' }
+        ],
+        vodStreams: [
+            { stream_id: 2, name: 'Movie 1', category_id: '20', stream_icon: 'https://img/movie.png', container_extension: 'mp4', plot: 'Plot', added: '1710000000' }
+        ],
+        seriesList: [
+            { series_id: 3, name: 'Series 1', category_id: '30', cover: 'https://img/series.png', plot: 'Series plot', last_modified: '1710000000' }
+        ],
+        epgXmlText: [
+            '<tv>',
+            '<channel id="channel-1"><display-name>Channel 1</display-name></channel>',
+            '<programme channel="channel-1" start="20260407070000 +0000" stop="20260407080000 +0000">',
+            '<title>Morning Show</title>',
+            '<desc>Wake up.</desc>',
+            '</programme>',
+            '</tv>'
+        ].join('')
+    });
+
+    assert.strictEqual(normalized.stats.liveCount, 1);
+    assert.strictEqual(normalized.stats.vodCount, 1);
+    assert.strictEqual(normalized.stats.seriesCount, 1);
+    assert.strictEqual(normalized.stats.epgChannels, 1);
+    assert.strictEqual(normalized.stats.epgProgrammes, 1);
+    assert.strictEqual(normalized.snapshotData.channels[0].url, 'http://panel.example.com:8080/live/demo/secret/1.m3u8');
+    assert.strictEqual(normalized.snapshotData.movies[0].url, 'http://panel.example.com:8080/movie/demo/secret/2.mp4');
+    assert.strictEqual(normalized.snapshotData.epgData['channel-1'][0].title, 'Morning Show');
+}
+
+async function runSnapshotProviderTests() {
+    process.env.CACHE_ENABLED = 'true';
+
+    const snapshotStore = require('../snapshotStore');
+    const createAddon = require('../addon');
+
+    const originalGetPrimarySnapshotForAddon = snapshotStore.getPrimarySnapshotForAddon;
+
+    snapshotStore.getPrimarySnapshotForAddon = async () => {
+        return {
+            id: 'primary-snapshot-id',
+            snapshot_data: {
+                channels: [
+                    {
+                        id: 'iptv_live_1',
+                        type: 'tv',
+                        name: 'Snapshot Channel',
+                        url: 'http://example.com/live/1.m3u8',
+                        category: 'Live',
+                        epg_channel_id: 'snapshot-channel',
+                        attributes: {}
+                    }
+                ],
+                movies: [
+                    {
+                        id: 'iptv_vod_2',
+                        type: 'movie',
+                        name: 'Snapshot Movie',
+                        url: 'http://example.com/movie/2.mp4',
+                        poster: 'https://example.com/poster.jpg',
+                        attributes: {}
+                    }
+                ],
+                series: [
+                    {
+                        id: 'iptv_series_3',
+                        series_id: 3,
+                        type: 'series',
+                        name: 'Snapshot Series',
+                        poster: 'https://example.com/series.jpg',
+                        attributes: {}
+                    }
+                ],
+                epgData: {
+                    'snapshot-channel': [
+                        { start: '20260407070000 +0000', stop: '20260407080000 +0000', title: 'Now Playing', desc: 'Current show' }
+                    ]
+                },
+                seriesInfoIndex: {
+                    '3': {
+                        videos: [
+                            {
+                                id: 'iptv_series_ep_33',
+                                title: 'Episode 1',
+                                season: 1,
+                                episode: 1,
+                                released: '2026-04-07T00:00:00.000Z',
+                                url: 'http://example.com/series/33.mp4'
+                            }
+                        ],
+                        info: { plot: 'Snapshot series plot' }
+                    }
+                }
+            }
+        };
+    };
+
+    const iface = await createAddon({
+        provider: 'xtream_snapshot',
+        accessCode: 'potato',
+        includeSeries: true,
+        enableEpg: true,
+        debug: false
+    });
+
+    const catalog = await iface.get('catalog', 'tv', 'iptv_channels', {}, {});
+    assert.strictEqual(catalog.metas.length, 1);
+    assert.strictEqual(catalog.metas[0].name, 'Snapshot Channel');
+
+    const movieStream = await iface.get('stream', 'movie', 'iptv_vod_2', {}, {});
+    assert.strictEqual(movieStream.streams[0].url, 'http://example.com/movie/2.mp4');
+
+    const seriesMeta = await iface.get('meta', 'series', 'iptv_series_3', {}, {});
+    assert.strictEqual(seriesMeta.meta.videos.length, 1);
+    assert.strictEqual(seriesMeta.meta.videos[0].id, 'iptv_series_ep_33');
+
+    snapshotStore.getPrimarySnapshotForAddon = originalGetPrimarySnapshotForAddon;
+}
+
 (async () => {
     runSdkUrlUtilsTests();
+    runSnapshotNormalizerTests();
     await runAddonBuildCacheTests();
     await runSearchCompatibilityTests();
     await runHomeCategoryLimitConfigTests();
     await runMetaSanitizationTests();
     await runArabicNormalizationSearchTests();
+    await runSnapshotProviderTests();
     console.log('ok');
 })().catch((error) => {
     console.error(error);

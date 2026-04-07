@@ -276,6 +276,7 @@ function createCacheKey(config) {
         m3uUrl: config.m3uUrl,
         epgUrl: config.epgUrl,
         enableEpg: !!config.enableEpg,
+        snapshotId: config.snapshotId,
         xtreamUrl: config.xtreamUrl,
         xtreamUsername: config.xtreamUsername,
         xtreamUseM3U: !!config.xtreamUseM3U,
@@ -292,11 +293,15 @@ class M3UEPGAddon {
         if (!config.provider) {
             config.provider = config.useXtream ? 'xtream' : 'direct';
         }
-        this.providerName = config.provider === 'xtream' ? 'xtream' : 'direct';
+        this.providerName = config.provider === 'xtream'
+            ? 'xtream'
+            : config.provider === 'xtream_snapshot'
+                ? 'xtreamSnapshot'
+                : 'direct';
         this.config = config;
         this.manifestRef = manifestRef;
         this.cacheKey = createCacheKey(config);
-        this.updateInterval = 3600000;
+        this.updateInterval = this.providerName === 'xtreamSnapshot' ? 60000 : 3600000;
         this.channels = []; // live TV
         this.movies = [];   // VOD movies
         this.series = [];   // Series (shows)
@@ -307,6 +312,7 @@ class M3UEPGAddon {
         };
         this.catalogGenreLookup = new Map();
         this.seriesInfoCache = new Map(); // seriesId -> { videos: [...], fetchedAt }
+        this.snapshotSeriesInfoIndex = {};
         this.epgData = {};
         this.lastUpdate = 0;
         this.updatePromise = null;
@@ -368,6 +374,7 @@ class M3UEPGAddon {
     }
 
     async loadFromCache() {
+        if (this.providerName === 'xtreamSnapshot') return;
         if (!CACHE_ENABLED) return;
         const cacheKey = 'addon:data:' + this.cacheKey;
         let cached = dataCache.get(cacheKey);
@@ -393,6 +400,7 @@ class M3UEPGAddon {
     }
 
     async saveToCache() {
+        if (this.providerName === 'xtreamSnapshot') return;
         if (!CACHE_ENABLED) return;
         const cacheKey = 'addon:data:' + this.cacheKey;
         const entry = {
@@ -791,6 +799,7 @@ class M3UEPGAddon {
             movies: this.movies,
             series: this.series,
             epgData: this.epgData,
+            snapshotSeriesInfoIndex: this.snapshotSeriesInfoIndex,
             directSeriesEpisodeIndex: new Map(this.directSeriesEpisodeIndex)
         };
 
@@ -814,6 +823,7 @@ class M3UEPGAddon {
                 this.movies = previousState.movies;
                 this.series = previousState.series;
                 this.epgData = previousState.epgData;
+                this.snapshotSeriesInfoIndex = previousState.snapshotSeriesInfoIndex;
                 this.directSeriesEpisodeIndex = previousState.directSeriesEpisodeIndex;
                 this.rebuildSearchIndex();
                 this.buildGenresInManifest();
@@ -828,6 +838,8 @@ class M3UEPGAddon {
     }
 
     deriveFallbackLogoUrl(item) {
+        if (item.logo && item.logo.trim()) return item.logo;
+        if (item.poster && item.poster.trim()) return item.poster;
         const logoAttr = item.attributes?.['tvg-logo'];
         if (logoAttr && logoAttr.trim()) return logoAttr;
         const tvgId = item.attributes?.['tvg-id'] || item.attributes?.['tvg-name'];

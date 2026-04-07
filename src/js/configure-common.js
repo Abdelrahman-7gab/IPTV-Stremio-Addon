@@ -267,6 +267,7 @@
         hideOverlay,
         startPolling,
         buildUrls,
+        getTokenConfigFromLocation: parseTokenConfigFromLocation,
         overlaySetMessage(msg) { loaderMessage.textContent = msg; },
         setProgress,
         appendDetail,

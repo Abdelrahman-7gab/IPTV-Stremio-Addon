@@ -343,6 +343,7 @@ label {
 }
 
 input[type=text],
+input[type=email],
 input[type=url],
 input[type=password],
 input[type=number],
@@ -512,6 +513,44 @@ select:focus {
     border-color: #383d4e;
     color: #b0b5c4;
     filter: grayscale(20%);
+}
+
+.status-pill {
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    padding: .55rem .8rem;
+    border-radius: 999px;
+    font-size: .74rem;
+    font-weight: 700;
+    letter-spacing: .35px;
+}
+
+.status-pill.ok {
+    background: rgba(63,191,155,0.18);
+    color: #bff3e1;
+    border: 1px solid rgba(63,191,155,0.32);
+}
+
+.status-pill.warn {
+    background: rgba(255,179,71,0.14);
+    color: #ffd59b;
+    border: 1px solid rgba(255,179,71,0.28);
+}
+
+.kv-list {
+    display: grid;
+    gap: .55rem;
+}
+
+.kv-list p {
+    margin: 0;
+    font-size: .82rem;
+    color: var(--text-dim);
+}
+
+.kv-list strong {
+    color: var(--text);
 }
 
 /* Footer */

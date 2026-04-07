@@ -13,21 +13,16 @@
     <header class="site-header">
         <div class="inner">
             <h1 class="app-title">IPTV Addon Configuration V2.0.0</h1>
-            <p class="subtitle">Choose how you would like to set up your IPTV Addon.</p>
+            <p class="subtitle">Configure the hosted snapshot-backed IPTV addon.</p>
         </div>
     </header>
 
     <main class="main-content">
         <section class="card-grid">
             <article class="option-card">
-                <h2>Direct M3U / EPG</h2>
-                <p>Provide a direct playlist URL and optional XMLTV guide.</p>
-                <a class="btn primary" href="/html/direct-config.html">Configure Direct</a>
-            </article>
-            <article class="option-card">
-                <h2>Xtream Codes API</h2>
-                <p>Use Xtream panel credentials or m3u_plus output with optional custom EPG.</p>
-                <a class="btn primary" href="/html/xtream-config.html">Configure Xtream</a>
+                <h2>Managed IPTV</h2>
+                <p>Install with the shared secret code. Admins can sign in separately to download the local sync tool.</p>
+                <a class="btn primary" href="/html/xtream-config.html">Open Config</a>
             </article>
             <article class="option-card">
                 <h2>Support Development</h2>
@@ -46,12 +41,11 @@
 
         <section class="info-panel">
             <h3>About the Addon</h3>
-            <p>This addon integrates IPTV playlists and TV guides into Stremio. Your configuration is encoded into a
-                token so you can reinstall or share securely.</p>
+            <p>This addon serves one managed IPTV snapshot into Stremio. Normal users only need the secret code, while admins can refresh the source snapshot from a local sync tool.</p>
             <ul class="feature-list">
-                <li>M3U + XMLTV (Direct)</li>
-                <li>Xtream Codes JSON / m3u_plus</li>
-                <li>Optional custom EPG + offset</li>
+                <li>Secret-code install flow</li>
+                <li>One managed Supabase snapshot</li>
+                <li>Email allowlist plus server-side cooldown for sync</li>
                 <li>Channel, Movie & Series catalogs</li>
                 <li>Local + Redis caching support</li>
             </ul>

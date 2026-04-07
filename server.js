@@ -11,6 +11,17 @@ const createAddon = require('./addon');
 const { encryptConfig, tryParseConfigToken } = require('./cryptoConfig');
 const LRUCache = require('./lruCache');
 const { normalizeSdkResourceUrl } = require('./sdkUrlUtils');
+const { getPublicSupabaseConfig } = require('./supabaseClient');
+const { requireAllowlistedSnapshotUser, writeSnapshotAuthError } = require('./snapshotAuth');
+const { getPublicSnapshotSourceInfo } = require('./snapshotSourceConfig');
+const {
+    getPrimarySnapshotForPublicRead,
+    getPrimarySnapshotForSyncDownload,
+    getPrimarySnapshotStatus,
+    overwritePrimarySnapshot,
+    verifyInstallCode
+} = require('./snapshotStore');
+const { renderSnapshotSyncFile } = require('./snapshotSyncTemplate');
 
 const DEBUG = (process.env.DEBUG_MODE || '').toLowerCase() === 'true';
 function dlog(...args) {
@@ -41,12 +52,208 @@ const PREFETCH_ENABLED = (process.env.PREFETCH_ENABLED || 'true').toLowerCase() 
 const app = express();
 const staticDir = path.join(__dirname, 'src');
 app.use(express.static(staticDir));
-app.use(express.json({ limit: '512kb' }));
+app.use(express.json({ limit: '25mb' }));
 
 app.use((req, res, next) => {
     res.setHeader('X-App', 'IPTV-Stremio-Addon');
     next();
 });
+
+function getRequestOrigin(req) {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const protocol = (typeof forwardedProto === 'string' && forwardedProto.trim()) || req.protocol;
+    return `${protocol}://${req.get('host')}`;
+}
+
+async function handlePrimarySnapshotRefreshAuthorize(req, res) {
+    try {
+        await requireAllowlistedSnapshotUser(req);
+        const snapshot = await getPrimarySnapshotStatus();
+
+        if (!snapshot.canRefresh) {
+            return res.status(429).json({
+                error: 'snapshot_cooldown',
+                message: 'Snapshot refresh is cooling down',
+                lastRefreshedAt: snapshot.lastRefreshedAt,
+                nextAllowedSyncAt: snapshot.nextAllowedSyncAt,
+                canRefresh: false
+            });
+        }
+
+        return res.json({
+            canRefresh: true,
+            lastRefreshedAt: snapshot.lastRefreshedAt,
+            nextAllowedSyncAt: snapshot.nextAllowedSyncAt,
+            snapshot
+        });
+    } catch (error) {
+        if (error?.statusCode) return writeSnapshotAuthError(res, error);
+        return res.status(500).json({
+            error: 'snapshot_authorize_failed',
+            message: error.message || 'Failed to authorize snapshot refresh'
+        });
+    }
+}
+
+async function handlePrimarySnapshotUpload(req, res) {
+    try {
+        const user = await requireAllowlistedSnapshotUser(req);
+        const snapshotData = req.body?.snapshotData;
+        const stats = req.body?.stats || {};
+
+        if (!snapshotData || typeof snapshotData !== 'object') {
+            return res.status(400).json({
+                error: 'invalid_snapshot_payload',
+                message: 'snapshotData is required'
+            });
+        }
+
+        const result = await overwritePrimarySnapshot({
+            user,
+            snapshotData,
+            stats
+        });
+
+        return res.json(result);
+    } catch (error) {
+        if (error?.statusCode) return writeSnapshotAuthError(res, error);
+        if (error?.code === 'snapshot_cooldown') {
+            return res.status(429).json({
+                error: 'snapshot_cooldown',
+                message: 'Snapshot refresh is cooling down',
+                nextAllowedSyncAt: error.nextAllowedSyncAt || null
+            });
+        }
+        return res.status(500).json({
+            error: 'snapshot_upload_failed',
+            message: error.message || 'Failed to upload snapshot'
+        });
+    }
+}
+
+async function handlePrimarySnapshotDownload(req, res) {
+    try {
+        const user = await requireAllowlistedSnapshotUser(req);
+        const snapshot = await getPrimarySnapshotForSyncDownload();
+
+        const html = renderSnapshotSyncFile({
+            snapshot,
+            publicConfig: getPublicSupabaseConfig(),
+            appOrigin: getRequestOrigin(req),
+            defaultEmail: user.email
+        });
+
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${snapshot.slug || snapshot.id}-sync.html"`);
+        return res.send(html);
+    } catch (error) {
+        if (error?.statusCode) return writeSnapshotAuthError(res, error);
+        return res.status(500).json({
+            error: 'sync_file_failed',
+            message: error.message || 'Failed to generate sync file'
+        });
+    }
+}
+
+app.get('/api/public-config', (req, res) => {
+    try {
+        return res.json({
+            supabase: getPublicSupabaseConfig(),
+            snapshotSource: getPublicSnapshotSourceInfo()
+        });
+    } catch (error) {
+        return res.status(500).json({
+            error: 'supabase_config_missing',
+            message: error.message
+        });
+    }
+});
+
+app.get('/api/snapshot', async (req, res) => {
+    try {
+        const snapshot = await getPrimarySnapshotStatus();
+        return res.json(snapshot);
+    } catch (error) {
+        return res.status(500).json({
+            error: 'snapshot_status_failed',
+            message: error.message || 'Failed to load primary snapshot'
+        });
+    }
+});
+
+app.post('/api/install/authorize', async (req, res) => {
+    try {
+        const code = String(req.body?.code || '');
+        const isValid = await verifyInstallCode(code);
+        if (!isValid) {
+            return res.status(403).json({
+                ok: false,
+                error: 'invalid_install_code',
+                message: 'The secret code is invalid'
+            });
+        }
+
+        const snapshot = await getPrimarySnapshotStatus();
+        return res.json({
+            ok: true,
+            snapshot
+        });
+    } catch (error) {
+        return res.status(500).json({
+            error: 'install_authorize_failed',
+            message: error.message || 'Failed to verify the install code'
+        });
+    }
+});
+
+app.post('/api/auth/session-check', async (req, res) => {
+    try {
+        const user = await requireAllowlistedSnapshotUser(req);
+        return res.json({
+            authenticated: true,
+            allowlisted: true,
+            user: {
+                id: user.id,
+                email: user.email
+            }
+        });
+    } catch (error) {
+        return writeSnapshotAuthError(res, error);
+    }
+});
+
+app.post('/api/snapshots', async (req, res) => {
+    try {
+        await requireAllowlistedSnapshotUser(req);
+        const snapshot = await getPrimarySnapshotStatus();
+        return res.status(200).json(snapshot);
+    } catch (error) {
+        if (error?.statusCode) return writeSnapshotAuthError(res, error);
+        return res.status(400).json({
+            error: 'snapshot_status_failed',
+            message: error.message || 'Failed to load the primary snapshot'
+        });
+    }
+});
+
+app.get('/api/snapshots/:id', async (req, res) => {
+    try {
+        const snapshot = await getPrimarySnapshotForPublicRead();
+        return res.json(snapshot);
+    } catch (error) {
+        return res.status(500).json({
+            error: 'snapshot_read_failed',
+            message: error.message || 'Failed to read snapshot'
+        });
+    }
+});
+
+app.post('/api/snapshot/refresh-authorize', handlePrimarySnapshotRefreshAuthorize);
+app.post('/api/snapshots/:id/refresh-authorize', handlePrimarySnapshotRefreshAuthorize);
+app.post('/api/snapshot/upload', handlePrimarySnapshotUpload);
+app.post('/api/snapshots/:id/upload', handlePrimarySnapshotUpload);
+app.get('/api/snapshot/download-sync-file', handlePrimarySnapshotDownload);
+app.get('/api/snapshots/:id/download-sync-file', handlePrimarySnapshotDownload);
 
 // Encryption endpoint
 app.post('/encrypt', (req, res) => {
@@ -164,10 +371,10 @@ app.get('/health', (req, res) => res.json({ status: 'OK', timestamp: new Date().
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 app.get('/configure-direct', (req, res) => {
-    const fileRoot = path.join(__dirname, 'direct-config.html');
-    res.sendFile(fileRoot, err => {
-        if (err) res.sendFile(path.join(staticDir, 'html', 'direct-config.html'));
-    });
+    return res.redirect('/configure-xtream');
+});
+app.get('/html/direct-config.html', (req, res) => {
+    return res.redirect('/configure-xtream');
 });
 app.get('/configure-xtream', (req, res) => {
     const fileRoot = path.join(__dirname, 'xtream-config.html');
@@ -190,22 +397,12 @@ function isConfigToken(token) {
 app.get('/:token/configure', (req, res) => {
     const { token } = req.params;
     if (!isConfigToken(token)) return res.status(400).json({ error: 'Invalid configuration' });
-    let cfg;
-    try {
-        cfg = maybeDecryptConfig(token);
-    } catch {
-        return res.redirect(`/${encodeURIComponent(token)}/configure-direct`);
-    }
-    const provider = cfg.provider || (cfg.useXtream ? 'xtream' : 'direct');
-    return res.redirect(`/${encodeURIComponent(token)}/configure-${provider}`);
+    return res.redirect(`/${encodeURIComponent(token)}/configure-xtream`);
 });
 
 app.get('/:token/configure-direct', (req, res) => {
     if (!isConfigToken(req.params.token)) return res.status(400).json({ error: 'Invalid token' });
-    const fileRoot = path.join(__dirname, 'direct-config.html');
-    res.sendFile(fileRoot, err => {
-        if (err) res.sendFile(path.join(staticDir, 'html', 'direct-config.html'));
-    });
+    return res.redirect(`/${encodeURIComponent(req.params.token)}/configure-xtream`);
 });
 app.get('/:token/configure-xtream', (req, res) => {
     if (!isConfigToken(req.params.token)) return res.status(400).json({ error: 'Invalid token' });
@@ -236,6 +433,23 @@ app.use('/:token', async (req, res, next) => {
     }
     if (!config.provider) config.provider = config.useXtream ? 'xtream' : 'direct';
     if (DEBUG && config.debug !== false) config.debug = true;
+
+    if (config.provider === 'xtream_snapshot') {
+        try {
+            const isValidInstallCode = await verifyInstallCode(config.accessCode);
+            if (!isValidInstallCode) {
+                return res.status(403).json({
+                    error: 'invalid_install_code',
+                    message: 'The addon secret code is invalid'
+                });
+            }
+        } catch (error) {
+            return res.status(500).json({
+                error: 'install_code_check_failed',
+                message: error.message || 'Failed to validate the addon secret code'
+            });
+        }
+    }
 
     const ifaceKey = 'iface:' + crypto.createHash('md5').update(token).digest('hex');
 
@@ -360,7 +574,11 @@ app.use((error, req, res, next) => {
     if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
 });
 
-const port = process.env.PORT || 7000;
-app.listen(port, () => {
-    console.log(`🚀 Server running on port ${port} (debug=${DEBUG}, prefetch=${PREFETCH_ENABLED})`);
-});
+if (require.main === module) {
+    const port = process.env.PORT || 7000;
+    app.listen(port, () => {
+        console.log(`🚀 Server running on port ${port} (debug=${DEBUG}, prefetch=${PREFETCH_ENABLED})`);
+    });
+}
+
+module.exports = app;
