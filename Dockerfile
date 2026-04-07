@@ -1,18 +1,14 @@
-# Use official Node.js LTS image
 FROM node:18-alpine
 
-# Set working directory
+ENV NODE_ENV=production
 WORKDIR /app
 
-# Copy package files and install dependencies
 COPY package.json package-lock.json ./
-RUN npm install --production
+RUN npm ci --omit=dev
 
-# Copy the rest of the code
 COPY . .
 
-# Expose the default port
 EXPOSE 7000
+USER node
 
-# Start the server
 CMD ["npm", "start"]
