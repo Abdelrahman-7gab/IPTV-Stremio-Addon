@@ -25,7 +25,7 @@ if (process.env.REDIS_URL) {
     }
 }
 
-const ADDON_NAME = "M3U/EPG TV Addon";
+const ADDON_NAME = "IPTV Addon";
 const ADDON_ID = "org.stremio.m3u-epg-addon";
 const BASE_CATALOG_EXTRAS = Object.freeze(['genre', 'skip']);
 const DYNAMIC_CATALOG_PREFIX = Object.freeze({
