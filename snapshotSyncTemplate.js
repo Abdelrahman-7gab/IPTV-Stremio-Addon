@@ -27,10 +27,12 @@ function readNormalizerSource() {
 function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmail = '' }) {
     const embedded = {
         snapshotTitle: snapshot.title,
+        snapshotId: snapshot.id,
         sourceConfig: snapshot.sourceConfig,
         supabase: publicConfig,
         endpoints: {
             sessionCheck: `${appOrigin}/api/auth/session-check`,
+            readSnapshot: `${appOrigin}/api/snapshots/${snapshot.id}`,
             authorizeRefresh: `${appOrigin}/api/snapshot/refresh-authorize`,
             upload: `${appOrigin}/api/snapshot/upload`
         }
@@ -202,6 +204,10 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
                 <h2>Snapshot Status</h2>
                 <p id="snapshotStatus" class="status-line">Checking refresh permission…</p>
                 <p id="snapshotMeta" class="status-line"></p>
+                <label>
+                    <input id="forceSeriesRefreshInput" type="checkbox">
+                    Force series episode refresh
+                </label>
                 <div class="button-row">
                     <button id="authorizeBtn" class="secondary" type="button">Check Access</button>
                     <button id="syncBtn" class="primary" type="button">Sync DB</button>
@@ -226,11 +232,14 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
         const logoutBtn = document.getElementById('logoutBtn');
         const authorizeBtn = document.getElementById('authorizeBtn');
         const syncBtn = document.getElementById('syncBtn');
+        const forceSeriesRefreshInput = document.getElementById('forceSeriesRefreshInput');
 
         const supabaseClient = window.supabase.createClient(
             EMBEDDED.supabase.url,
             EMBEDDED.supabase.publishableKey
         );
+        const SERIES_INFO_CONCURRENCY = 4;
+        const SERIES_INFO_PROGRESS_STEP = 25;
 
         function log(line) {
             logOutput.textContent += (logOutput.textContent ? '\\n' : '') + line;
@@ -362,6 +371,161 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
             }
         }
 
+        async function fetchCurrentSnapshot() {
+            const response = await fetch(EMBEDDED.endpoints.readSnapshot, {
+                cache: 'no-store'
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload.message || 'Failed to load the current snapshot');
+            }
+            return payload;
+        }
+
+        function mapItemsById(items) {
+            const map = new Map();
+            (Array.isArray(items) ? items : []).forEach((item) => {
+                if (item && item.id) {
+                    map.set(item.id, item);
+                }
+            });
+            return map;
+        }
+
+        function getExistingSeriesInfo(seriesInfoIndex, seriesId) {
+            if (!seriesInfoIndex || typeof seriesInfoIndex !== 'object') return null;
+            const key = String(seriesId || '').trim();
+            if (!key) return null;
+            return seriesInfoIndex[key] || seriesInfoIndex['iptv_series_' + key] || null;
+        }
+
+        function normalizeExistingSeriesInfoValue(value) {
+            if (!value) return null;
+            if (Array.isArray(value)) {
+                return { videos: value, info: null };
+            }
+            if (typeof value === 'object') {
+                return {
+                    videos: Array.isArray(value.videos) ? value.videos : [],
+                    info: value.info || null
+                };
+            }
+            return null;
+        }
+
+        function reuseNormalizedEntry(nextEntry, existingMap, counters) {
+            const existingEntry = existingMap.get(nextEntry.id);
+            if (existingEntry &&
+                window.SnapshotNormalizer.fingerprintMediaItem(existingEntry) ===
+                    window.SnapshotNormalizer.fingerprintMediaItem(nextEntry)) {
+                counters.reused += 1;
+                return existingEntry;
+            }
+
+            counters.changed += 1;
+            return nextEntry;
+        }
+
+        async function mapWithConcurrency(items, limit, worker) {
+            if (!Array.isArray(items) || items.length === 0) return [];
+
+            const results = new Array(items.length);
+            let nextIndex = 0;
+
+            async function runWorker() {
+                while (true) {
+                    const currentIndex = nextIndex;
+                    nextIndex += 1;
+                    if (currentIndex >= items.length) return;
+                    results[currentIndex] = await worker(items[currentIndex], currentIndex);
+                }
+            }
+
+            const workers = [];
+            const workerCount = Math.max(1, Math.min(limit, items.length));
+            for (let i = 0; i < workerCount; i += 1) {
+                workers.push(runWorker());
+            }
+            await Promise.all(workers);
+            return results;
+        }
+
+        async function hydrateSeriesInfo(workItems, baseApiUrl, sourceConfig, existingSeriesInfoIndex) {
+            const nextSeriesInfoIndex = {};
+            const counters = {
+                reused: 0,
+                refreshed: 0,
+                fallback: 0,
+                empty: 0
+            };
+
+            const changedItems = [];
+            workItems.forEach((item) => {
+                if (item.reuseExistingInfo) {
+                    nextSeriesInfoIndex[item.seriesKey] = item.reuseExistingInfo;
+                    counters.reused += 1;
+                    return;
+                }
+                changedItems.push(item);
+            });
+
+            if (changedItems.length === 0) {
+                return { nextSeriesInfoIndex, counters };
+            }
+
+            log(
+                'Refreshing episode data for ' +
+                changedItems.length +
+                ' changed/new series (' +
+                counters.reused +
+                ' reused).'
+            );
+
+            await mapWithConcurrency(changedItems, SERIES_INFO_CONCURRENCY, async (item, index) => {
+                const label = '[' + (index + 1) + '/' + changedItems.length + '] ';
+                const shouldLogProgress =
+                    index === 0 ||
+                    index === changedItems.length - 1 ||
+                    ((index + 1) % SERIES_INFO_PROGRESS_STEP) === 0;
+                try {
+                    if (shouldLogProgress) {
+                        log(label + 'Refreshing series info: ' + item.entry.name);
+                    }
+                    const infoJson = await fetchJson(
+                        baseApiUrl + '&action=get_series_info&series_id=' + encodeURIComponent(item.seriesKey),
+                        'series info ' + item.entry.name
+                    );
+                    const normalizedInfo = window.SnapshotNormalizer.normalizeSeriesInfoEntry({
+                        xtreamUrl: sourceConfig.xtreamUrl,
+                        xtreamUsername: sourceConfig.xtreamUsername,
+                        xtreamPassword: sourceConfig.xtreamPassword,
+                        seriesId: item.seriesKey,
+                        infoJson,
+                        fallbackSeries: item.entry
+                    });
+                    nextSeriesInfoIndex[item.seriesKey] = normalizedInfo;
+                    counters.refreshed += 1;
+                    if (shouldLogProgress) {
+                        log(label + 'Episode data updated: ' + item.entry.name + ' (' + normalizedInfo.videos.length + ' episodes)');
+                    }
+                } catch (error) {
+                    const fallback = normalizeExistingSeriesInfoValue(getExistingSeriesInfo(existingSeriesInfoIndex, item.seriesKey));
+                    if (fallback) {
+                        nextSeriesInfoIndex[item.seriesKey] = fallback;
+                        counters.fallback += 1;
+                        log(label + 'Series info refresh failed, reused cached data for ' + item.entry.name + ': ' + error.message);
+                        return;
+                    }
+
+                    nextSeriesInfoIndex[item.seriesKey] = { videos: [], info: null };
+                    counters.empty += 1;
+                    log(label + 'Series info refresh failed for ' + item.entry.name + ': ' + error.message);
+                }
+            });
+
+            return { nextSeriesInfoIndex, counters };
+        }
+
         async function runSync() {
             log('Preparing sync...');
             const auth = await authorizeRefresh();
@@ -373,8 +537,23 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
                 sourceConfig.xtreamUrl +
                 '/player_api.php?username=' + encodeURIComponent(sourceConfig.xtreamUsername) +
                 '&password=' + encodeURIComponent(sourceConfig.xtreamPassword);
+            const forceSeriesRefresh = !!forceSeriesRefreshInput.checked;
 
             try {
+                let existingSnapshotData = {};
+                try {
+                    const existingSnapshot = await fetchCurrentSnapshot();
+                    existingSnapshotData = existingSnapshot?.snapshotData || {};
+                    log(
+                        'Loaded current snapshot: ' +
+                        (Array.isArray(existingSnapshotData.channels) ? existingSnapshotData.channels.length : 0) + ' live, ' +
+                        (Array.isArray(existingSnapshotData.movies) ? existingSnapshotData.movies.length : 0) + ' vod, ' +
+                        (Array.isArray(existingSnapshotData.series) ? existingSnapshotData.series.length : 0) + ' series.'
+                    );
+                } catch (error) {
+                    log('Current snapshot could not be loaded, proceeding with a cold rebuild: ' + error.message);
+                }
+
                 const [liveStreams, vodStreams, seriesList, liveCategories, vodCategories, seriesCategories] = await Promise.all([
                     fetchJson(baseApiUrl + '&action=get_live_streams', 'live streams'),
                     fetchJson(baseApiUrl + '&action=get_vod_streams', 'vod streams'),
@@ -389,6 +568,69 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
                     sourceConfig.includeSeries === false ? Promise.resolve({}) : fetchCategoryMap(baseApiUrl, 'get_series_categories')
                 ]);
 
+                const existingChannelsById = mapItemsById(existingSnapshotData.channels);
+                const existingMoviesById = mapItemsById(existingSnapshotData.movies);
+                const existingSeriesById = mapItemsById(existingSnapshotData.series);
+                const existingSeriesInfoIndex =
+                    existingSnapshotData.seriesInfoIndex && typeof existingSnapshotData.seriesInfoIndex === 'object'
+                        ? existingSnapshotData.seriesInfoIndex
+                        : {};
+
+                const liveCounters = { reused: 0, changed: 0 };
+                const normalizedChannels = (Array.isArray(liveStreams) ? liveStreams : []).map((stream) => reuseNormalizedEntry(
+                    window.SnapshotNormalizer.normalizeLiveStream(stream, {
+                        xtreamUrl: sourceConfig.xtreamUrl,
+                        xtreamUsername: sourceConfig.xtreamUsername,
+                        xtreamPassword: sourceConfig.xtreamPassword,
+                        liveCategories
+                    }),
+                    existingChannelsById,
+                    liveCounters
+                ));
+
+                const vodCounters = { reused: 0, changed: 0 };
+                const normalizedMovies = (Array.isArray(vodStreams) ? vodStreams : []).map((stream) => reuseNormalizedEntry(
+                    window.SnapshotNormalizer.normalizeVodStream(stream, {
+                        xtreamUrl: sourceConfig.xtreamUrl,
+                        xtreamUsername: sourceConfig.xtreamUsername,
+                        xtreamPassword: sourceConfig.xtreamPassword,
+                        vodCategories
+                    }),
+                    existingMoviesById,
+                    vodCounters
+                ));
+
+                const normalizedSeries = [];
+                const seriesWorkItems = [];
+                const seriesCounters = { reused: 0, changed: 0 };
+
+                if (sourceConfig.includeSeries !== false) {
+                    (Array.isArray(seriesList) ? seriesList : []).forEach((stream) => {
+                        const nextSeriesEntry = reuseNormalizedEntry(
+                            window.SnapshotNormalizer.normalizeSeriesEntry(stream, { seriesCategories }),
+                            existingSeriesById,
+                            seriesCounters
+                        );
+                        normalizedSeries.push(nextSeriesEntry);
+
+                        const existingInfo = normalizeExistingSeriesInfoValue(
+                            getExistingSeriesInfo(existingSeriesInfoIndex, stream.series_id)
+                        );
+                        const existingSeriesEntry = existingSeriesById.get(nextSeriesEntry.id);
+                        const canReuseSeriesInfo = !forceSeriesRefresh &&
+                            existingInfo &&
+                            existingSeriesEntry &&
+                            window.SnapshotNormalizer.fingerprintMediaItem(existingSeriesEntry) ===
+                                window.SnapshotNormalizer.fingerprintMediaItem(nextSeriesEntry);
+
+                        seriesWorkItems.push({
+                            seriesKey: String(stream.series_id),
+                            entry: nextSeriesEntry,
+                            reuseExistingInfo: canReuseSeriesInfo ? existingInfo : null
+                        });
+                    });
+                }
+
                 let epgXmlText = '';
                 if (sourceConfig.epgMode === 'custom' && sourceConfig.customEpgUrl) {
                     epgXmlText = await fetchText(sourceConfig.customEpgUrl, 'custom EPG');
@@ -401,21 +643,36 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
                     );
                 }
 
+                const seriesInfoResult = sourceConfig.includeSeries === false
+                    ? {
+                        nextSeriesInfoIndex: {},
+                        counters: { reused: 0, refreshed: 0, fallback: 0, empty: 0 }
+                    }
+                    : await hydrateSeriesInfo(seriesWorkItems, baseApiUrl, sourceConfig, existingSeriesInfoIndex);
+
                 const normalized = window.SnapshotNormalizer.normalizeSnapshot({
-                    xtreamUrl: sourceConfig.xtreamUrl,
-                    xtreamUsername: sourceConfig.xtreamUsername,
-                    xtreamPassword: sourceConfig.xtreamPassword,
-                    liveStreams,
-                    vodStreams,
-                    seriesList,
-                    liveCategories,
-                    vodCategories,
-                    seriesCategories,
+                    channels: normalizedChannels,
+                    movies: normalizedMovies,
+                    series: normalizedSeries,
                     epgXmlText,
                     includeSeries: sourceConfig.includeSeries,
+                    seriesInfoIndex: seriesInfoResult.nextSeriesInfoIndex,
                     lastDurationMs: Date.now() - startedAt
                 });
 
+                log(
+                    'Reuse summary: ' +
+                    liveCounters.reused + ' live reused, ' +
+                    vodCounters.reused + ' vod reused, ' +
+                    seriesCounters.reused + ' series reused.'
+                );
+                log(
+                    'Series episodes: ' +
+                    seriesInfoResult.counters.reused + ' reused, ' +
+                    seriesInfoResult.counters.refreshed + ' refreshed, ' +
+                    seriesInfoResult.counters.fallback + ' fallback, ' +
+                    seriesInfoResult.counters.empty + ' empty.'
+                );
                 log(
                     'Normalized snapshot: ' +
                     normalized.stats.liveCount + ' live, ' +

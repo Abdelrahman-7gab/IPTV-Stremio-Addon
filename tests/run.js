@@ -481,7 +481,11 @@ async function runArabicNormalizationSearchTests() {
 }
 
 function runSnapshotNormalizerTests() {
-    const { normalizeSnapshot } = require('../snapshotNormalizer');
+    const {
+        fingerprintMediaItem,
+        normalizeSeriesInfoEntry,
+        normalizeSnapshot
+    } = require('../snapshotNormalizer');
 
     const normalized = normalizeSnapshot({
         xtreamUrl: 'http://panel.example.com:8080',
@@ -519,6 +523,48 @@ function runSnapshotNormalizerTests() {
     assert.strictEqual(normalized.snapshotData.channels[0].url, 'http://panel.example.com:8080/live/demo/secret/1.m3u8');
     assert.strictEqual(normalized.snapshotData.movies[0].url, 'http://panel.example.com:8080/movie/demo/secret/2.mp4');
     assert.strictEqual(normalized.snapshotData.epgData['channel-1'][0].title, 'Morning Show');
+
+    const seriesInfo = normalizeSeriesInfoEntry({
+        xtreamUrl: 'http://panel.example.com:8080',
+        xtreamUsername: 'demo',
+        xtreamPassword: 'secret',
+        seriesId: 3,
+        fallbackSeries: normalized.snapshotData.series[0],
+        infoJson: {
+            info: {
+                plot: 'Series plot',
+                cover: 'https://img/series.png',
+                backdrop_path: ['https://img/backdrop.jpg'],
+                releaseDate: '2024-03-01'
+            },
+            episodes: {
+                '1': [
+                    {
+                        id: 33,
+                        episode_num: 1,
+                        title: 'Episode 1',
+                        container_extension: 'mkv',
+                        season: 1,
+                        added: '1710000000',
+                        info: {
+                            movie_image: 'https://img/ep1.jpg'
+                        }
+                    }
+                ]
+            }
+        }
+    });
+
+    assert.strictEqual(seriesInfo.videos.length, 1);
+    assert.strictEqual(seriesInfo.videos[0].id, 'iptv_series_ep_33');
+    assert.strictEqual(seriesInfo.videos[0].url, 'http://panel.example.com:8080/series/demo/secret/33.mkv');
+    assert.strictEqual(seriesInfo.videos[0].season, 1);
+    assert.strictEqual(seriesInfo.videos[0].episode, 1);
+    assert.strictEqual(seriesInfo.info.plot, 'Series plot');
+    assert.notStrictEqual(
+        fingerprintMediaItem(normalized.snapshotData.series[0]),
+        fingerprintMediaItem({ ...normalized.snapshotData.series[0], addedAt: '2025-01-01T00:00:00.000Z' })
+    );
 }
 
 async function runSnapshotProviderTests() {

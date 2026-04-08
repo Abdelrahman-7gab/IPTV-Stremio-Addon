@@ -80,64 +80,153 @@
         };
     }
 
+    function normalizeLiveStream(stream, input = {}) {
+        const liveCategories = input.liveCategories || {};
+        const category = liveCategories[stream.category_id] || stream.category_name || stream.category || stream.category_id || 'Live';
+        return {
+            id: `iptv_live_${stream.stream_id}`,
+            name: stream.name,
+            type: 'tv',
+            url: `${input.xtreamUrl}/live/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${stream.stream_id}.m3u8`,
+            logo: stream.stream_icon,
+            category,
+            epg_channel_id: stream.epg_channel_id
+        };
+    }
+
     function normalizeLiveStreams(input = {}) {
         const streams = Array.isArray(input.liveStreams) ? input.liveStreams : [];
-        const liveCategories = input.liveCategories || {};
-        return streams.map((stream) => {
-            const category = liveCategories[stream.category_id] || stream.category_name || stream.category || stream.category_id || 'Live';
-            return {
-                id: `iptv_live_${stream.stream_id}`,
-                name: stream.name,
-                type: 'tv',
-                url: `${input.xtreamUrl}/live/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${stream.stream_id}.m3u8`,
-                logo: stream.stream_icon,
-                category,
-                epg_channel_id: stream.epg_channel_id
-            };
-        });
+        return streams.map((stream) => normalizeLiveStream(stream, input));
+    }
+
+    function normalizeVodStream(stream, input = {}) {
+        const vodCategories = input.vodCategories || {};
+        const category = vodCategories[stream.category_id] || stream.category_name || stream.category || 'Movies';
+        return {
+            id: `iptv_vod_${stream.stream_id}`,
+            name: stream.name,
+            type: 'movie',
+            url: `${input.xtreamUrl}/movie/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${stream.stream_id}.${stream.container_extension || 'mp4'}`,
+            poster: stream.stream_icon,
+            plot: stream.plot || '',
+            year: stream.releasedate ? new Date(stream.releasedate).getFullYear() : null,
+            addedAt: normalizeReleased(stream.added || stream.releasedate || stream.last_modified || null),
+            category
+        };
     }
 
     function normalizeVodStreams(input = {}) {
         const streams = Array.isArray(input.vodStreams) ? input.vodStreams : [];
-        const vodCategories = input.vodCategories || {};
-        return streams.map((stream) => {
-            const category = vodCategories[stream.category_id] || stream.category_name || stream.category || 'Movies';
-            return {
-                id: `iptv_vod_${stream.stream_id}`,
-                name: stream.name,
-                type: 'movie',
-                url: `${input.xtreamUrl}/movie/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${stream.stream_id}.${stream.container_extension || 'mp4'}`,
-                poster: stream.stream_icon,
-                plot: stream.plot || '',
-                year: stream.releasedate ? new Date(stream.releasedate).getFullYear() : null,
-                addedAt: normalizeReleased(stream.added || stream.releasedate || stream.last_modified || null),
-                category
-            };
-        });
+        return streams.map((stream) => normalizeVodStream(stream, input));
+    }
+
+    function normalizeSeriesEntry(stream, input = {}) {
+        const seriesCategories = input.seriesCategories || {};
+        const category = seriesCategories[stream.category_id] || stream.category_name || stream.category || 'Series';
+        return {
+            id: `iptv_series_${stream.series_id}`,
+            series_id: stream.series_id,
+            name: stream.name,
+            type: 'series',
+            poster: stream.cover,
+            plot: stream.plot || '',
+            addedAt: normalizeReleased(stream.last_modified || stream.releaseDate || null),
+            category
+        };
     }
 
     function normalizeSeriesList(input = {}) {
         const streams = Array.isArray(input.seriesList) ? input.seriesList : [];
-        const seriesCategories = input.seriesCategories || {};
-        return streams.map((stream) => {
-            const category = seriesCategories[stream.category_id] || stream.category_name || stream.category || 'Series';
-            return {
-                id: `iptv_series_${stream.series_id}`,
-                series_id: stream.series_id,
-                name: stream.name,
-                type: 'series',
-                poster: stream.cover,
-                plot: stream.plot || '',
-                addedAt: normalizeReleased(stream.last_modified || stream.releaseDate || null),
-                category
-            };
+        return streams.map((stream) => normalizeSeriesEntry(stream, input));
+    }
+
+    function trimSeriesInfo(info = {}, fallbackSeries = {}) {
+        const trimmed = {
+            name: info.name || fallbackSeries.name || '',
+            plot: info.plot || fallbackSeries.plot || '',
+            cover: info.cover || info.cover_big || fallbackSeries.poster || '',
+            backdrop_path: Array.isArray(info.backdrop_path)
+                ? info.backdrop_path.filter(Boolean).slice(0, 4)
+                : (info.backdrop_path || ''),
+            releaseDate: info.releaseDate || info.release_date || info.releasedate || fallbackSeries.addedAt || ''
+        };
+
+        Object.keys(trimmed).forEach((key) => {
+            const value = trimmed[key];
+            if (value === null || value === '' || (Array.isArray(value) && value.length === 0)) {
+                delete trimmed[key];
+            }
         });
+
+        return Object.keys(trimmed).length ? trimmed : null;
+    }
+
+    function normalizeSeriesInfoEntry(input = {}) {
+        const infoJson = input.infoJson || {};
+        const seriesId = String(input.seriesId || input.fallbackSeries?.series_id || '').trim();
+        const videos = [];
+        const episodesObj = infoJson.episodes || {};
+
+        Object.keys(episodesObj).forEach((seasonKey) => {
+            const seasonEpisodes = episodesObj[seasonKey];
+            if (!Array.isArray(seasonEpisodes)) return;
+
+            seasonEpisodes.forEach((episodeRow, index) => {
+                const episodeId = episodeRow?.id;
+                if (!episodeId) return;
+
+                let season = parseInt(episodeRow.season || seasonKey, 10);
+                if (!Number.isInteger(season) || season < 1) season = 1;
+
+                let episode = parseInt(episodeRow.episode_num || episodeRow.episode || 0, 10);
+                if (!Number.isInteger(episode) || episode < 1) episode = index + 1;
+
+                const container = episodeRow.container_extension || 'mp4';
+                videos.push({
+                    id: `iptv_series_ep_${episodeId}`,
+                    title: episodeRow.title || `Episode ${episode}`,
+                    season,
+                    episode,
+                    released: normalizeReleased(episodeRow.releasedate || episodeRow.added || null),
+                    thumbnail: episodeRow.info?.movie_image || episodeRow.info?.episode_image || episodeRow.info?.cover_big || null,
+                    url: `${input.xtreamUrl}/series/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${episodeId}.${container}`,
+                    stream_id: episodeId,
+                    series_id: seriesId || null
+                });
+            });
+        });
+
+        videos.sort((left, right) => (left.season - right.season) || (left.episode - right.episode));
+
+        return {
+            videos,
+            info: trimSeriesInfo(infoJson.info || {}, input.fallbackSeries || {})
+        };
+    }
+
+    function fingerprintMediaItem(item = {}) {
+        return [
+            item.id || '',
+            item.series_id || '',
+            item.type || '',
+            item.name || '',
+            item.url || '',
+            item.logo || '',
+            item.poster || '',
+            item.plot || '',
+            item.year || '',
+            item.addedAt || '',
+            item.category || '',
+            item.epg_channel_id || ''
+        ].join('|');
     }
 
     function normalizeSnapshot(options = {}) {
-        const channels = normalizeLiveStreams(options);
-        const movies = normalizeVodStreams(options);
-        const series = options.includeSeries === false ? [] : normalizeSeriesList(options);
+        const channels = Array.isArray(options.channels) ? options.channels : normalizeLiveStreams(options);
+        const movies = Array.isArray(options.movies) ? options.movies : normalizeVodStreams(options);
+        const series = options.includeSeries === false
+            ? []
+            : (Array.isArray(options.series) ? options.series : normalizeSeriesList(options));
 
         const epg = options.epgXmlText ? parseXmltv(options.epgXmlText) : {
             epgData: {},
@@ -171,7 +260,12 @@
     }
 
     return {
+        fingerprintMediaItem,
+        normalizeLiveStream,
+        normalizeSeriesEntry,
+        normalizeSeriesInfoEntry,
         normalizeSnapshot,
+        normalizeVodStream,
         normalizeReleased,
         parseXmltv
     };
