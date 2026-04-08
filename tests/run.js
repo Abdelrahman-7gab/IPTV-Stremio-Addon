@@ -560,11 +560,51 @@ function runSnapshotNormalizerTests() {
     assert.strictEqual(seriesInfo.videos[0].url, 'http://panel.example.com:8080/series/demo/secret/33.mkv');
     assert.strictEqual(seriesInfo.videos[0].season, 1);
     assert.strictEqual(seriesInfo.videos[0].episode, 1);
+    assert.strictEqual('stream_id' in seriesInfo.videos[0], false);
+    assert.strictEqual('series_id' in seriesInfo.videos[0], false);
     assert.strictEqual(seriesInfo.info.plot, 'Series plot');
     assert.notStrictEqual(
         fingerprintMediaItem(normalized.snapshotData.series[0]),
         fingerprintMediaItem({ ...normalized.snapshotData.series[0], addedAt: '2025-01-01T00:00:00.000Z' })
     );
+}
+
+async function runSnapshotCompressionTests() {
+    const {
+        expandSnapshotData,
+        prepareSnapshotDataForTransport,
+        SERIES_INFO_INDEX_COMPRESSION
+    } = require('../snapshotCompression');
+
+    const source = {
+        channels: [{ id: 'iptv_live_1', name: 'Channel', type: 'tv' }],
+        movies: [],
+        series: [{ id: 'iptv_series_3', series_id: 3, name: 'Series', type: 'series' }],
+        epgData: {},
+        seriesInfoIndex: {
+            '3': {
+                videos: [
+                    {
+                        id: 'iptv_series_ep_33',
+                        title: 'Episode 1',
+                        season: 1,
+                        episode: 1,
+                        url: 'http://example.com/series/33.mp4'
+                    }
+                ],
+                info: { plot: 'Snapshot series plot' }
+            }
+        }
+    };
+
+    const prepared = await prepareSnapshotDataForTransport(source);
+    assert.strictEqual('seriesInfoIndex' in prepared, false);
+    assert.strictEqual(prepared.seriesInfoIndexCompression, SERIES_INFO_INDEX_COMPRESSION);
+    assert.strictEqual(typeof prepared.seriesInfoIndexCompressed, 'string');
+
+    const expanded = expandSnapshotData(prepared);
+    assert.deepStrictEqual(expanded.seriesInfoIndex, source.seriesInfoIndex);
+    assert.deepStrictEqual(expanded.channels, source.channels);
 }
 
 async function runSnapshotProviderTests() {
@@ -653,12 +693,17 @@ async function runSnapshotProviderTests() {
     assert.strictEqual(seriesMeta.meta.videos.length, 1);
     assert.strictEqual(seriesMeta.meta.videos[0].id, 'iptv_series_ep_33');
 
+    const seriesStream = await iface.get('stream', 'series', 'iptv_series_ep_33', {}, {});
+    assert.strictEqual(seriesStream.streams.length, 1);
+    assert.strictEqual(seriesStream.streams[0].url, 'http://example.com/series/33.mp4');
+
     snapshotStore.getPrimarySnapshotForAddon = originalGetPrimarySnapshotForAddon;
 }
 
 (async () => {
     runSdkUrlUtilsTests();
     runSnapshotNormalizerTests();
+    await runSnapshotCompressionTests();
     await runAddonBuildCacheTests();
     await runSearchCompatibilityTests();
     await runHomeCategoryLimitConfigTests();

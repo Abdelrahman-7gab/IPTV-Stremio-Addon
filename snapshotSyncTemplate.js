@@ -24,6 +24,10 @@ function readNormalizerSource() {
     return fs.readFileSync(path.join(__dirname, 'snapshotNormalizer.js'), 'utf8');
 }
 
+function readCompressionSource() {
+    return fs.readFileSync(path.join(__dirname, 'snapshotCompression.js'), 'utf8');
+}
+
 function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmail = '' }) {
     const embedded = {
         snapshotTitle: snapshot.title,
@@ -220,6 +224,7 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>${readNormalizerSource()}</script>
+    <script>${readCompressionSource()}</script>
     <script>
         const EMBEDDED = ${serializeInlineJson(embedded)};
         const logOutput = document.getElementById('logOutput');
@@ -681,6 +686,7 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
                     normalized.stats.epgProgrammes + ' programmes.'
                 );
 
+                const preparedSnapshotData = await window.SnapshotCompression.prepareSnapshotDataForTransport(normalized.snapshotData);
                 const uploadResponse = await fetch(EMBEDDED.endpoints.upload, {
                     method: 'POST',
                     headers: {
@@ -688,7 +694,7 @@ function renderSnapshotSyncFile({ snapshot, publicConfig, appOrigin, defaultEmai
                         Authorization: 'Bearer ' + auth.token
                     },
                     body: JSON.stringify({
-                        snapshotData: normalized.snapshotData,
+                        snapshotData: preparedSnapshotData,
                         stats: normalized.stats
                     })
                 });

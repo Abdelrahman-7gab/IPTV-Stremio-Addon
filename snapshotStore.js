@@ -1,5 +1,9 @@
 const { getServiceSupabase } = require('./supabaseClient');
 const { getDefaultXtreamSourceConfig } = require('./snapshotSourceConfig');
+const {
+    expandSnapshotData,
+    prepareSnapshotDataForTransport
+} = require('./snapshotCompression');
 
 const SNAPSHOT_PROVIDER = 'xtream';
 const SNAPSHOT_REFRESH_COOLDOWN_MINUTES = 30;
@@ -26,7 +30,7 @@ function sanitizePublicSnapshotRow(row) {
         slug: row.slug,
         title: row.title,
         provider: row.provider,
-        snapshotData: row.snapshot_data || {},
+        snapshotData: expandSnapshotData(row.snapshot_data || {}),
         stats: row.stats || {},
         lastRefreshedAt: row.last_refreshed_at || null,
         nextAllowedSyncAt: computeNextAllowedAt(row.last_refreshed_at)
@@ -234,7 +238,7 @@ async function getPrimarySnapshotForAddon() {
         id: snapshot.id,
         title: snapshot.title,
         slug: snapshot.slug,
-        snapshot_data: snapshot.snapshot_data || {},
+        snapshot_data: expandSnapshotData(snapshot.snapshot_data || {}),
         stats: snapshot.stats || {},
         last_refreshed_at: snapshot.last_refreshed_at || null
     };
@@ -257,11 +261,12 @@ async function getPrimarySnapshotForSyncDownload() {
 
 async function overwriteSnapshot({ snapshotId, user, snapshotData, stats }) {
     const supabase = getServiceSupabase();
+    const preparedSnapshotData = await prepareSnapshotDataForTransport(snapshotData);
     const { data, error } = await supabase.rpc('overwrite_xtream_snapshot', {
         p_snapshot_id: snapshotId,
         p_user_id: user.id,
         p_user_email: user.email,
-        p_snapshot_data: snapshotData,
+        p_snapshot_data: preparedSnapshotData,
         p_stats: stats || {}
     });
 

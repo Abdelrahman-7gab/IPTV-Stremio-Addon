@@ -48,11 +48,12 @@ const CACHE_ENABLED = (process.env.CACHE_ENABLED || 'true').toLowerCase() !== 'f
 
 const PREFETCH_MAX_BYTES = parseInt(process.env.PREFETCH_MAX_BYTES || '150000000', 10);
 const PREFETCH_ENABLED = (process.env.PREFETCH_ENABLED || 'true').toLowerCase() !== 'false';
+const SNAPSHOT_UPLOAD_LIMIT = process.env.SNAPSHOT_UPLOAD_LIMIT || '100mb';
 
 const app = express();
 const staticDir = path.join(__dirname, 'src');
 app.use(express.static(staticDir));
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: SNAPSHOT_UPLOAD_LIMIT }));
 
 app.use((req, res, next) => {
     res.setHeader('X-App', 'IPTV-Stremio-Addon');

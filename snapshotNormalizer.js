@@ -163,7 +163,6 @@
 
     function normalizeSeriesInfoEntry(input = {}) {
         const infoJson = input.infoJson || {};
-        const seriesId = String(input.seriesId || input.fallbackSeries?.series_id || '').trim();
         const videos = [];
         const episodesObj = infoJson.episodes || {};
 
@@ -182,17 +181,24 @@
                 if (!Number.isInteger(episode) || episode < 1) episode = index + 1;
 
                 const container = episodeRow.container_extension || 'mp4';
-                videos.push({
+                const video = {
                     id: `iptv_series_ep_${episodeId}`,
                     title: episodeRow.title || `Episode ${episode}`,
                     season,
                     episode,
                     released: normalizeReleased(episodeRow.releasedate || episodeRow.added || null),
                     thumbnail: episodeRow.info?.movie_image || episodeRow.info?.episode_image || episodeRow.info?.cover_big || null,
-                    url: `${input.xtreamUrl}/series/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${episodeId}.${container}`,
-                    stream_id: episodeId,
-                    series_id: seriesId || null
+                    url: `${input.xtreamUrl}/series/${encodeURIComponent(input.xtreamUsername)}/${encodeURIComponent(input.xtreamPassword)}/${episodeId}.${container}`
+                };
+
+                Object.keys(video).forEach((key) => {
+                    const value = video[key];
+                    if (value === null || value === '') {
+                        delete video[key];
+                    }
                 });
+
+                videos.push(video);
             });
         });
 
